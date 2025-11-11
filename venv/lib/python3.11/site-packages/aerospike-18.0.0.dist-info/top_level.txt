@@ -1,0 +1,3 @@
+aerospike
+aerospike-stubs
+aerospike_helpers
