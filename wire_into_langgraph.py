@@ -1,7 +1,13 @@
 # app.py
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
-from aerospike_saver import AerospikeSaverMin
+from langgraph.checkpoint.aerospike.saver import AerospikeSaver
+import aerospike
+
+CONFIG = {"hosts": [("localhost", 3000)]}  # or ("localhost", 3000)
+
+client = aerospike.client(CONFIG).connect()
+
 
 class State(TypedDict):
     question: str
@@ -17,7 +23,7 @@ g.add_node("answerer", answerer)
 g.add_edge(START, "answerer")
 g.add_edge("answerer", END)
 
-checkpointer = AerospikeSaverMin(namespace="test")  # default namespace in CE
+checkpointer = AerospikeSaver(client = client, namespace="test")  # default namespace in CE
 app = g.compile(checkpointer=checkpointer)
 
 if __name__ == "__main__":
