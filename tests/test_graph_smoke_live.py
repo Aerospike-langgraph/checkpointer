@@ -19,7 +19,7 @@ def test_graph_smoke_runs_and_persists_checkpoint(saver, cfg_base):
     app = _build_graph(saver)
 
     # Run once
-    out = app.invoke(None, cfg_base)
+    out = app.invoke({"x":1}, cfg_base)
     print(out)
     assert out["x"] == 4  # (1+1)*2
 

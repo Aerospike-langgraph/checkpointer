@@ -11,6 +11,7 @@ from langgraph.checkpoint.base import (
     Checkpoint,
     CheckpointMetadata,
     ChannelVersions,
+    WRITES_IDX_MAP
 )
 
 SEP = "|"
@@ -169,10 +170,10 @@ class AerospikeSaver(BaseCheckpointSaver):
           - metadata: CheckpointMetadata dict
           - new_versions: channel versions updated in this step (we ignore for now)
         """
-        thread_id, checkpoint_ns, checkpoint_id, _ = self._ids_from_config(config)
+        thread_id, checkpoint_ns, parent_checkpoint_id, _ = self._ids_from_config(config)
 
         # If LangGraph hasn't filled checkpoint_id in config yet, fall back to checkpoint["id"]
-        checkpoint_id = checkpoint_id or checkpoint.get("id")
+        checkpoint_id = checkpoint.get("id")
         if not checkpoint_id:
             # Very defensive; usually checkpoint["id"] is set by LangGraph
             raise ValueError("checkpoint_id is required for put()")
@@ -188,6 +189,7 @@ class AerospikeSaver(BaseCheckpointSaver):
             "thread_id": thread_id,
             "checkpoint_ns": checkpoint_ns,
             "checkpoint_id": checkpoint_id,
+            "p_checkpoint_id": parent_checkpoint_id,
             "checkpoint": json.dumps(checkpoint, ensure_ascii=False),
             "metadata": json.dumps(metadata or {}, ensure_ascii=False),
             "ts": ts,
@@ -241,12 +243,51 @@ class AerospikeSaver(BaseCheckpointSaver):
 
         thread_id, checkpoint_ns, checkpoint_id, _ = self._ids_from_config(config)
         if not checkpoint_id:
-            # In practice LangGraph should have set this before put_writes,
-            # but if not, we just skip storing writes.
             return
-
+        
         key = self._key_writes(thread_id, checkpoint_ns, checkpoint_id)
-        self._put(key, {"writes": json.dumps(list(writes), ensure_ascii=False)})
+
+        # Load existing writes for this checkpoint, if any
+        existing_rec = self._get(key)
+        existing_items: List[Dict[str, Any]] = []
+        if existing_rec is not None:
+            _, _, bins = existing_rec
+            raw = bins.get("writes")
+            if raw:
+                try:
+                    existing_items = json.loads(raw)
+                except Exception:
+                    existing_items = []
+        
+        now_ts = _now_ns()
+
+        for idx, (channel, value) in enumerate(writes):
+            # Stable slot index: special channels (ERROR, SCHEDULED, etc.) get negative idx
+            idx_val = WRITES_IDX_MAP.get(channel, idx)
+            type_, serialized = self.serde.dumps_typed(value)
+
+            new_item = {
+                "task_id": task_id,
+                "task_path": task_path,
+                "channel": channel,
+                "idx": idx_val,
+                "type": type_,
+                "value": serialized,
+                "ts": now_ts,
+            }
+            replace_at: Optional[int] = None
+            for i, item in enumerate(existing_items):
+                if item.get("task_id") == task_id and item.get("idx") == idx_val:
+                    replace_at = i
+                    break
+
+            if replace_at is not None:
+                existing_items[replace_at] = new_item
+            else:
+                existing_items.append(new_item)
+
+        
+        self._put(key, {"writes": existing_items})
 
     def get_tuple(
         self,
@@ -255,6 +296,7 @@ class AerospikeSaver(BaseCheckpointSaver):
         """
         If configurable.checkpoint_id is omitted, returns the latest.
         """
+        print(config)
         thread_id, checkpoint_ns, checkpoint_id, _ = self._ids_from_config(config)
 
         # resolve to latest if needed
@@ -281,13 +323,22 @@ class AerospikeSaver(BaseCheckpointSaver):
             metadata = {}
 
         # fetch writes if present
-        w = self._get(self._key_writes(thread_id, checkpoint_ns, checkpoint_id))
-        writes: Optional[List[Dict[str, Any]]] = None
-        if w is not None and "writes" in w[2]:
-            try:
-                writes = json.loads(w[2]["writes"])
-            except Exception:
-                writes = None
+        pending_writes: List[Tuple[str, str, Any]] = []
+        wrec = self._get(self._key_writes(thread_id, checkpoint_ns, checkpoint_id))
+        if wrec is not None:
+            _, _, wbins = wrec
+            items = wbins.get("writes") or []
+            for item in items:
+                try:
+                    task_id = item.get("task_id", "")
+                    channel = item["channel"]
+                    type_ = item["type"]
+                    serialized = item["value"]
+                    value = self.serde.loads_typed((type_, serialized))
+                    pending_writes.append((task_id, channel, value))
+                except KeyError:
+                    # skip malformed entries
+                    continue
 
         cp_config: Dict[str, Any] = {
             "configurable": {
@@ -301,6 +352,18 @@ class AerospikeSaver(BaseCheckpointSaver):
             config=cp_config,
             checkpoint=checkpoint,
             metadata=metadata,
+            parent_config=(
+                {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": bins.get("p_checkpoint_id"),
+                    }
+                }
+                if bins.get("p_checkpoint_id")
+                else None
+            ),
+            pending_writes=pending_writes,
         )
 
     def list(
