@@ -252,12 +252,7 @@ class AerospikeSaver(BaseCheckpointSaver):
         existing_items: List[Dict[str, Any]] = []
         if existing_rec is not None:
             _, _, bins = existing_rec
-            raw = bins.get("writes")
-            if raw:
-                try:
-                    existing_items = json.loads(raw)
-                except Exception:
-                    existing_items = []
+            existing_items = bins.get("writes")
         
         now_ts = _now_ns()
 
