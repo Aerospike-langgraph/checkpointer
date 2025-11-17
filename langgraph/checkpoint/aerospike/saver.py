@@ -184,13 +184,16 @@ class AerospikeSaver(BaseCheckpointSaver):
             ts = _now_ns()
             checkpoint["ts"] = ts
 
+        cp_type, cp_bytes = self.serde.dumps_typed(checkpoint)
+
         key = self._key_cp(thread_id, checkpoint_ns, checkpoint_id)
         rec = {
             "thread_id": thread_id,
             "checkpoint_ns": checkpoint_ns,
             "checkpoint_id": checkpoint_id,
             "p_checkpoint_id": parent_checkpoint_id,
-            "checkpoint": json.dumps(checkpoint, ensure_ascii=False),
+            "cp_type": cp_type,
+            "checkpoint": cp_bytes,
             "metadata": json.dumps(metadata or {}, ensure_ascii=False),
             "ts": ts,
         }
@@ -245,9 +248,10 @@ class AerospikeSaver(BaseCheckpointSaver):
         if not checkpoint_id:
             return
         
-        key = self._key_writes(thread_id, checkpoint_ns, checkpoint_id)
+        key = self._key_writes(thread_id, checkpoint_ns, checkpoint_id) # Do we need to put task id as key. (Reason: Record limit 8Mb)
 
         # Load existing writes for this checkpoint, if any
+        # Question : Do we need a union or replace.
         existing_rec = self._get(key)
         existing_items: List[Dict[str, Any]] = []
         if existing_rec is not None:
@@ -257,7 +261,7 @@ class AerospikeSaver(BaseCheckpointSaver):
         now_ts = _now_ns()
 
         for idx, (channel, value) in enumerate(writes):
-            # Stable slot index: special channels (ERROR, SCHEDULED, etc.) get negative idx
+            # Stable slot index: special channels SCHEDULED,(ERROR,  etc.) get negative idx
             idx_val = WRITES_IDX_MAP.get(channel, idx)
             type_, serialized = self.serde.dumps_typed(value)
 
@@ -291,7 +295,7 @@ class AerospikeSaver(BaseCheckpointSaver):
         """
         If configurable.checkpoint_id is omitted, returns the latest.
         """
-        print(config)
+        #print(config)
         thread_id, checkpoint_ns, checkpoint_id, _ = self._ids_from_config(config)
 
         # resolve to latest if needed
@@ -308,15 +312,25 @@ class AerospikeSaver(BaseCheckpointSaver):
             return None
 
         _, _, bins = got
-        try:
-            checkpoint = json.loads(bins.get("checkpoint", "{}"))
-        except Exception:
-            checkpoint = {}
-        try:
-            metadata = json.loads(bins.get("metadata", "{}"))
-        except Exception:
-            metadata = {}
 
+        cp_type = bins.get("cp_type")
+        raw_cp = bins.get("checkpoint")
+        if cp_type is None or raw_cp is None:
+            return None
+
+        try:
+            checkpoint = self.serde.loads_typed((cp_type, raw_cp))
+        except Exception:
+            return None
+        
+        raw_meta = bins.get("metadata")
+        if raw_meta is not None:
+            try:
+                metadata = json.loads(raw_meta)
+            except Exception:
+                metadata = {}
+        else:
+            metadata = {}
         # fetch writes if present
         pending_writes: List[Tuple[str, str, Any]] = []
         wrec = self._get(self._key_writes(thread_id, checkpoint_ns, checkpoint_id))
@@ -398,63 +412,4 @@ class AerospikeSaver(BaseCheckpointSaver):
                 meta = {}
             out.append((cid, meta))
         return out
-
-    # ---------- optional: legacy adapters (callable with explicit IDs) ----------
-    def put_with_ids(
-        self,
-        thread_id: str,
-        checkpoint_ns: str,
-        checkpoint_id: str,
-        checkpoint: Dict[str, Any],
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        cfg = {
-            "configurable": {
-                "thread_id": thread_id,
-                "checkpoint_ns": checkpoint_ns,
-                "checkpoint_id": checkpoint_id,
-            }
-        }
-        # new_versions is not used here; pass empty dict
-        return self.put(cfg, checkpoint, metadata or {}, {})
-
-    def put_writes_with_ids(
-        self,
-        thread_id: str,
-        checkpoint_ns: str,
-        checkpoint_id: str,
-        writes: Iterable[Dict[str, Any]],
-    ) -> None:
-        cfg = {
-            "configurable": {
-                "thread_id": thread_id,
-                "checkpoint_ns": checkpoint_ns,
-                "checkpoint_id": checkpoint_id,
-            }
-        }
-        # Dummy task_id/task_path
-        return self.put_writes(cfg, writes, task_id="", task_path="")
-
-
-    def get_with_ids(
-        self,
-        thread_id: str,
-        checkpoint_ns: str,
-        checkpoint_id: Optional[str] = None,
-    ) -> Optional[CheckpointTuple]:
-        cfg = {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}}
-        if checkpoint_id:
-            cfg["configurable"]["checkpoint_id"] = checkpoint_id
-        return self.get_tuple(cfg)
-
-    def list_with_ids(
-        self,
-        thread_id: str,
-        checkpoint_ns: str,
-        limit: int = 20,
-        before: Optional[str] = None,
-    ) -> List[Tuple[str, Dict[str, Any]]]:
-        cfg = {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}}
-        if before:
-            cfg["configurable"]["before"] = before
-        return self.list(cfg, limit=limit)
+    
