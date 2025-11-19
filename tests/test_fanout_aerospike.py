@@ -12,7 +12,7 @@ from langgraph.constants import START, Send
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from langgraph.checkpoint.aerospike.saver import AerospikeSaver
+from langgraph.checkpoint.aerospike import AerospikeSaver
 
 
 # ---------- Graph definitions (copied from Mongo benchmark, sync only) ----------
