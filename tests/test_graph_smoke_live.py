@@ -29,5 +29,5 @@ def test_graph_smoke_runs_and_persists_checkpoint(saver, cfg_base):
     assert isinstance(latest.checkpoint, dict)
 
     # And timeline has at least one id
-    timeline = saver.list(cfg_base, limit=5)
+    timeline = list(saver.list(cfg_base, limit=5))
     assert len(timeline) >= 1

@@ -183,6 +183,8 @@ def test_custom_properties_aerospike(aerospike_saver: AerospikeSaver) -> None:
     checkpoint_tuple = aerospike_saver.get_tuple(config)
     assert checkpoint_tuple is not None
 
+    print(checkpoint_tuple)
+
     # Thanks to the merged metadata in put(), these should be present:
-    # assert checkpoint_tuple.metadata.get("user_id") == user_id
-    # assert checkpoint_tuple.metadata.get("assistant_id") == assistant_id
+    assert checkpoint_tuple.metadata.get("user_id") == user_id
+    assert checkpoint_tuple.metadata.get("assistant_id") == assistant_id

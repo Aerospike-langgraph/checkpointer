@@ -40,4 +40,4 @@ def saver(AerospikeSaver, client, aerospike_namespace):
 @pytest.fixture()
 def cfg_base():
     # Reuse this in tests; use any namespace/thread you like
-    return {"configurable": {"thread_id": "1", "checkpoint_ns": "demo"}}
+    return {"configurable": {"thread_id": "1", "checkpoint_ns": "demo", "user_id": "jagrut"}}

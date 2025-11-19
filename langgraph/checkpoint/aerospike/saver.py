@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterator
+
+from langchain_core.runnables import RunnableConfig
 
 import aerospike
 from langgraph.checkpoint.base import (
     BaseCheckpointSaver,
     CheckpointTuple,
-    Checkpoint,
-    CheckpointMetadata,
     ChannelVersions,
     WRITES_IDX_MAP
 )
@@ -91,12 +92,10 @@ class AerospikeSaver(BaseCheckpointSaver):
         c = cfg.get("configurable", {}) or {}
         md = cfg.get("metadata", {}) or {}
 
-        # 1) thread_id: must exist somewhere
         thread_id = c.get("thread_id") or md.get("thread_id")
         if not thread_id:
             raise ValueError("configurable.thread_id is required in RunnableConfig")
 
-        # 2) checkpoint_ns: optional, default ""
         checkpoint_ns = (
             c.get("checkpoint_ns")
             or md.get("checkpoint_ns")
@@ -104,9 +103,8 @@ class AerospikeSaver(BaseCheckpointSaver):
         )
 
         checkpoint_id = c.get("checkpoint_id")
-        before = c.get("before")
 
-        return thread_id, checkpoint_ns, checkpoint_id, before
+        return thread_id, checkpoint_ns, checkpoint_id
 
     # ---------- keys ----------
     def _key_cp(self, thread_id: str, checkpoint_ns: str, checkpoint_id: str):
@@ -170,21 +168,22 @@ class AerospikeSaver(BaseCheckpointSaver):
           - metadata: CheckpointMetadata dict
           - new_versions: channel versions updated in this step (we ignore for now)
         """
-        thread_id, checkpoint_ns, parent_checkpoint_id, _ = self._ids_from_config(config)
-
-        # If LangGraph hasn't filled checkpoint_id in config yet, fall back to checkpoint["id"]
+        thread_id, checkpoint_ns, parent_checkpoint_id = self._ids_from_config(config)
         checkpoint_id = checkpoint.get("id")
         if not checkpoint_id:
-            # Very defensive; usually checkpoint["id"] is set by LangGraph
             raise ValueError("checkpoint_id is required for put()")
 
-        # Use ts from checkpoint if present, otherwise generate one
         ts = checkpoint.get("ts")
         if ts is None:
             ts = _now_ns()
             checkpoint["ts"] = ts
 
         cp_type, cp_bytes = self.serde.dumps_typed(checkpoint)
+        metadata = metadata.copy()
+        metadata.update(config.get("metadata", {}))
+
+        meta_type, meta_bytes = self.serde.dumps_typed(metadata)
+
 
         key = self._key_cp(thread_id, checkpoint_ns, checkpoint_id)
         rec = {
@@ -194,26 +193,24 @@ class AerospikeSaver(BaseCheckpointSaver):
             "p_checkpoint_id": parent_checkpoint_id,
             "cp_type": cp_type,
             "checkpoint": cp_bytes,
-            "metadata": json.dumps(metadata or {}, ensure_ascii=False),
+            "meta_type": meta_type,
+            "metadata": meta_bytes,
             "ts": ts,
         }
         self._put(key, rec)
 
-        # Update latest pointer
         latest_key = self._key_latest(thread_id, checkpoint_ns)
         self._put(latest_key, {"checkpoint_id": checkpoint_id, "ts": ts})
 
-        # Update timeline (most recent first, capped length)
         timeline_key = self._key_timeline(thread_id, checkpoint_ns)
         items = self._read_timeline_items(timeline_key)
-        # de-dup by id; keep newest
+
         items = [(t, cid) for (t, cid) in items if cid != checkpoint_id]
         items.insert(0, (ts, checkpoint_id))
         if len(items) > self.timeline_max:
             items = items[: self.timeline_max]
         self._put(timeline_key, {"items": json.dumps(items)})
 
-        # IMPORTANT: return updated config with checkpoint_id set
         new_config = dict(config)
         cfg_conf = dict(new_config.get("configurable") or {})
         cfg_conf.update(
@@ -244,14 +241,12 @@ class AerospikeSaver(BaseCheckpointSaver):
         if not writes:
             return
 
-        thread_id, checkpoint_ns, checkpoint_id, _ = self._ids_from_config(config)
+        thread_id, checkpoint_ns, checkpoint_id = self._ids_from_config(config)
         if not checkpoint_id:
             return
         
         key = self._key_writes(thread_id, checkpoint_ns, checkpoint_id) # Do we need to put task id as key. (Reason: Record limit 8Mb)
 
-        # Load existing writes for this checkpoint, if any
-        # Question : Do we need a union or replace.
         existing_rec = self._get(key)
         existing_items: List[Dict[str, Any]] = []
         if existing_rec is not None:
@@ -261,7 +256,6 @@ class AerospikeSaver(BaseCheckpointSaver):
         now_ts = _now_ns()
 
         for idx, (channel, value) in enumerate(writes):
-            # Stable slot index: special channels SCHEDULED,(ERROR,  etc.) get negative idx
             idx_val = WRITES_IDX_MAP.get(channel, idx)
             type_, serialized = self.serde.dumps_typed(value)
 
@@ -295,17 +289,14 @@ class AerospikeSaver(BaseCheckpointSaver):
         """
         If configurable.checkpoint_id is omitted, returns the latest.
         """
-        #print(config)
-        thread_id, checkpoint_ns, checkpoint_id, _ = self._ids_from_config(config)
+        thread_id, checkpoint_ns, checkpoint_id = self._ids_from_config(config)
 
-        # resolve to latest if needed
         if checkpoint_id is None:
             latest = self._get(self._key_latest(thread_id, checkpoint_ns))
             if latest is None or "checkpoint_id" not in latest[2]:
                 return None
             checkpoint_id = latest[2]["checkpoint_id"]
 
-        # fetch main record
         key = self._key_cp(thread_id, checkpoint_ns, checkpoint_id)
         got = self._get(key)
         if got is None:
@@ -315,23 +306,22 @@ class AerospikeSaver(BaseCheckpointSaver):
 
         cp_type = bins.get("cp_type")
         raw_cp = bins.get("checkpoint")
+        raw_meta = bins.get("metadata")
+        meta_type = bins.get("meta_type")
         if cp_type is None or raw_cp is None:
             return None
-
         try:
             checkpoint = self.serde.loads_typed((cp_type, raw_cp))
         except Exception:
             return None
         
-        raw_meta = bins.get("metadata")
-        if raw_meta is not None:
-            try:
-                metadata = json.loads(raw_meta)
-            except Exception:
-                metadata = {}
-        else:
-            metadata = {}
-        # fetch writes if present
+        if meta_type is None or raw_meta is None:
+            return None
+        try:
+            metadata = self.serde.loads_typed((meta_type, raw_meta))
+        except Exception:
+            return None
+        
         pending_writes: List[Tuple[str, str, Any]] = []
         wrec = self._get(self._key_writes(thread_id, checkpoint_ns, checkpoint_id))
         if wrec is not None:
@@ -346,7 +336,6 @@ class AerospikeSaver(BaseCheckpointSaver):
                     value = self.serde.loads_typed((type_, serialized))
                     pending_writes.append((task_id, channel, value))
                 except KeyError:
-                    # skip malformed entries
                     continue
 
         cp_config: Dict[str, Any] = {
@@ -377,39 +366,71 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def list(
         self,
-        config: Dict[str, Any],
-        limit: int = 20,
-    ) -> List[Tuple[str, Dict[str, Any]]]:
-        """
-        Return up to `limit` (checkpoint_id, metadata) pairs, newest-first.
+        config: Optional[RunnableConfig],
+        *,
+        filter: Optional[dict[str, Any]] = None,
+        before: Optional[RunnableConfig] = None,
+        limit: int | None = None,
+    ) -> Iterator[CheckpointTuple]:
+        """List checkpoints that match the given criteria.
 
-        You may pass configurable.before in config to start AFTER that id.
+        Args:
+            config: Base configuration for filtering checkpoints.
+            filter: Additional filtering criteria.
+            before: List checkpoints created before this configuration.
+            limit: Maximum number of checkpoints to return.
+
+        Returns:
+            Iterator of matching checkpoint tuples.
+
+        Raises:
+            NotImplementedError: Implement this method in your custom checkpoint saver.
         """
-        thread_id, checkpoint_ns, _, before = self._ids_from_config(config)
+        thread_id, checkpoint_ns, _ = self._ids_from_config(config or {})
+
         timeline_key = self._key_timeline(thread_id, checkpoint_ns)
-        items = self._read_timeline_items(timeline_key)  # [(ts, id), ...], newest-first
+        items = self._read_timeline_items(timeline_key)
 
-        if before:
-            new_items: List[Tuple[int, str]] = []
+        before_id: Optional[str] = None
+        if before is not None:
+            _, _, before_id = self._ids_from_config(before or {})
+
+        if before_id:
             seen = False
-            for (t, cid) in items:
-                if not seen and cid == before:
-                    seen = True
+            new_items: List[Tuple[int, str]] = []
+            for ts, cid in items:
+                if not seen:
+                    if cid == before_id:
+                        seen = True
                     continue
-                if seen:
-                    new_items.append((t, cid))
+                new_items.append((ts, cid))
             items = new_items
 
-        out: List[Tuple[str, Dict[str, Any]]] = []
-        for _, cid in items[: max(1, int(limit))]:
-            rec = self._get(self._key_cp(thread_id, checkpoint_ns, cid))
-            if rec is None:
+        yielded = 0
+        for _, cid in items:
+            if limit is not None and yielded >= limit:
+                break
+
+            cp_config: Dict[str, Any] = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": cid,
+                }
+            }
+
+            tpl = self.get_tuple(cp_config)
+            if tpl is None:
                 continue
-            bins = rec[2]
-            try:
-                meta = json.loads(bins.get("metadata", "{}"))
-            except Exception:
-                meta = {}
-            out.append((cid, meta))
-        return out
-    
+
+            if filter:
+                ok = True
+                for k, v in filter.items():
+                    if tpl.metadata.get(k) != v:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+
+            yielded += 1
+            yield tpl
