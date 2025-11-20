@@ -1,2 +1,7 @@
-./app.py
+app.py
+# test DBs
+travel2.sqlite
+travel2.backup.sqlitemyvenv/
 __pycache__/
+*.py[cod]
+*.sqlite
