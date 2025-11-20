@@ -18,5 +18,6 @@ dependencies = [
   "aerospike>=18.0.0",
 ]
 
-[tool.setuptools]
-packages = ["langgraph"]
+[tool.setuptools.packages.find]
+namespaces = true
+include = ["langgraph.checkpoint.*"]
