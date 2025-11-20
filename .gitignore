@@ -5,3 +5,8 @@ travel2.backup.sqlitemyvenv/
 __pycache__/
 *.py[cod]
 *.sqlite
+
+app.py
+myenv/
+venv/
+aerospike_saver.py
