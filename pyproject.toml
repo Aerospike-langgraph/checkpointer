@@ -9,8 +9,8 @@ description = "Aerospike-based checkpoint saver for LangGraph"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
-  { name = "Jagrut Nemade", email = "jagrutjnemade.6p10@gmail.com" },
-  { name = "Harin Avvari", email = "harinsub@gmail.com" }
+  { name = "Jagrut Nemade", email = "jnemade@aerospike.com" },
+  { name = "Harin Avvari", email = "havvari@aerospike.com" }
 ]
 
 dependencies = [
