@@ -6,7 +6,7 @@ travel2.backup.sqlitemyvenv/
 __pycache__
 *.py[cod]
 *.sqlite
-myenv
+myvenv
 aerospike_saver.py
 langgraph/__pycache__
 langgraph/checkpoint/aerospike/__pycache__
