@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aerospike_langgraph"
+name = "langgraph-checkpoint-aerospike"
 version = "0.1.0"
 description = "Aerospike-based checkpoint saver for LangGraph"
 readme = "README.md"
@@ -19,4 +19,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["aerospike_langgraph"]
+packages = ["langgraph"]
