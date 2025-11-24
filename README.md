@@ -3,18 +3,18 @@
 Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`. The repo includes a minimal Aerospike docker setup, examples, and pytest-based checks.
 
 ## Quick start
-1) Install deps (Python 3.10+/aerospike client):  
+1) Install deps (Python 3.10+/aerospike client):
    ```bash
    python -m venv .venv && source .venv/bin/activate
-   pip install -e .
+   pip install -r requirements.txt 
    ```
-2) Bring up Aerospike locally:  
+2) Bring up Aerospike locally:
    ```bash
    docker compose up -d
    ```
-3) Point the saver at your cluster (defaults work for the docker compose):  
-   - `AEROSPIKE_HOST=127.0.0.1`  
-   - `AEROSPIKE_PORT=3000`  
+3) Point the saver at your cluster (defaults match compose):
+   - `AEROSPIKE_HOST=127.0.0.1`
+   - `AEROSPIKE_PORT=3000`
    - `AEROSPIKE_NAMESPACE=test`
 4) Use in a graph:
    ```python
@@ -28,22 +28,32 @@ Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`. Th
    compiled.invoke({"input": "hello"}, config={"configurable": {"thread_id": "demo"}})
    ```
 
+## Where the saver lives
+- Core implementation: `langgraph/checkpoint/aerospike/saver.py` (also mirrored in `aerospike_langgraph/saver.py` for packaging).
+
 ## Configuration
-- The saver reads `AEROSPIKE_HOST`, `AEROSPIKE_PORT`, and `AEROSPIKE_NAMESPACE`; defaults match the compose file.
-- Create a `.env` if you want to override locally (not committed).
-- For custom Aerospike configs, edit `docker-compose.yml` (volume mounts are commented as examples).
+- Reads `AEROSPIKE_HOST`, `AEROSPIKE_PORT`, `AEROSPIKE_NAMESPACE`; defaults align with `docker-compose.yml`.
+- Create a `.env` to override locally (not committed).
+- For custom Aerospike configs, adjust `docker-compose.yml`; volume mounts are commented as examples.
 
 ## Tests
-You need a reachable Aerospike instance (compose is fine):
-```bash
-docker compose up -d
-pytest
-```
+- Require a reachable Aerospike (`docker compose up -d` is enough).
+- Coverage:
+  - `tests/test_fanout_aerospike.py`: fanout graph saves/loads checkpoints, custom properties.
+  - `tests/test_weather_graph_live.py`: weather graph live flow with Aerospike checkpointer.
+  - `tests/test_customer_support_graph_live.py`: Langraph tutorial airline customer support bot(requies Ollama downloaded).
+  - `tests/test_graph_smoke_live.py`: smoke coverage for graph compilation/invoke with Aerospike.
+  - `tests/test_debug_dump_checkpoint.py`: debug dump helper behavior.
+- Run everything:
+  ```bash
+  pytest
+  ```
 
 ## Utilities
-- `inspect_as.py` / `inspect_latest_testcheckpoints.py`: quick helpers to inspect stored checkpoints.
-- `wire_into_langgraph.py`: shows how to attach the saver to a LangGraph graph.
+- `tests/test_debug_dump_checkpoint.py`: takes a thread_id input and outputs the latest decoded checkpoint
 
 ## Notes
-- Ignore/leave untracked local DBs (`travel2.sqlite`), caches, and virtualenvs; `.gitignore` already covers them.
-- If you see tracked `__pycache__` files from earlier commits, run `git rm --cached -r __pycache__ .pytest_cache` once and commit.***
+- If you just want to use the Aerospike checkpointer outside Docker use this command:
+   ```bash
+   pip install git+https://github.com/Aerospike-langgraph/checkpointer.git
+   ```
