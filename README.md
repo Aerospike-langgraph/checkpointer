@@ -29,7 +29,7 @@ Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`. Th
    ```
 
 ## Where the saver lives
-- Core implementation: `langgraph/checkpoint/aerospike/saver.py` (also mirrored in `aerospike_langgraph/saver.py` for packaging).
+- Core implementation: `langgraph/checkpoint/aerospike/saver.py`.
 
 ## Configuration
 - Reads `AEROSPIKE_HOST`, `AEROSPIKE_PORT`, `AEROSPIKE_NAMESPACE`; defaults align with `docker-compose.yml`.
