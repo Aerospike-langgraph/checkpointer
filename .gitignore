@@ -16,4 +16,4 @@ langgraph/checkpoint/.DS_Store
 os.py
 tests/__pycache__
 .env
-
+aerospike_langgraph/
