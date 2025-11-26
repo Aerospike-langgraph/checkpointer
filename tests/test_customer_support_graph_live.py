@@ -794,5 +794,5 @@ def test_customer_support_graph_runs_and_persists_checkpoint(saver, cfg_base):
     assert isinstance(latest.checkpoint, dict)
 
     # And that we have some timeline entries for this thread/ns
-    timeline = saver.list(cfg, limit=10)
+    timeline = list(saver.list(cfg, limit=10))
     assert len(timeline) >= 10

@@ -260,5 +260,5 @@ def test_weather_graph_runs_and_persists_checkpoint(saver, cfg_base):
     assert isinstance(latest.checkpoint, dict)
 
     # And that there is some timeline history
-    timeline = saver.list(cfg, limit=5)
+    timeline = list(saver.list(cfg, limit=5))
     assert len(timeline) >= 1
