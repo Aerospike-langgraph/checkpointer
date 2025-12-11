@@ -33,9 +33,27 @@ def AerospikeSaver():
     from langgraph.checkpoint.aerospike import AerospikeSaver
     return AerospikeSaver
 
+# --------------- NEW: TTL CONFIG FOR TESTS ---------------
+def _test_ttl_config() -> dict:
+    """
+    TTL configuration for all AerospikeSaver instances in tests.
+
+    These environment variables allow you to easily tweak TTL 
+    while testing without touching code.
+    """
+    default_ttl = int(os.getenv("TEST_DEFAULT_TTL_MINUTES", "5"))
+    refresh = os.getenv("TEST_REFRESH_ON_READ", "true").lower() == "true"
+
+    return {
+        "default_ttl": default_ttl,      # minutes
+        "refresh_on_read": refresh,
+    }
+# ---------------------------------------------------------
+
 @pytest.fixture()
 def saver(AerospikeSaver, client, aerospike_namespace):
-    return AerospikeSaver(client=client, namespace=aerospike_namespace)
+    ttl_cfg = _test_ttl_config()
+    return AerospikeSaver(client=client, namespace=aerospike_namespace, ttl=ttl_cfg)
 
 @pytest.fixture()
 def cfg_base():

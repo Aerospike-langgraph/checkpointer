@@ -4,7 +4,7 @@ from pprint import pprint
 
 def test_dump_latest_weather_checkpoint(saver, cfg_base):
     cfg = deepcopy(cfg_base)
-    cfg["configurable"]["checkpoint_ns"] = "weather-demo"
+    cfg["configurable"]["checkpoint_ns"] = "customer_support"
 
     cp = saver.get_tuple(cfg)
     assert cp is not None

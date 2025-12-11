@@ -9,10 +9,10 @@ services:
       - "3001:3001"   # fabric
       - "3002:3002"   # mesh
     # --- OPTIONAL: mount a custom config & data dir ---
-    # volumes:
-    #   - ./aerospike/etc/aerospike:/etc/aerospike
+    volumes:
+     - ./aerospike/etc/aerospike:/etc/aerospike
     #   - ./aerospike/data:/opt/aerospike/data
-    # command: ["--config-file", "/etc/aerospike/aerospike.conf"]
+    command: ["--config-file", "/etc/aerospike/aerospike.conf"]
     # -----------------------------------------------
     restart: unless-stopped
 

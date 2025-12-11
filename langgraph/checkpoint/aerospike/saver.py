@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone 
 import json
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -18,8 +19,10 @@ from langgraph.checkpoint.base import (
 SEP = "|"
 
 
-def _now_ns() -> int:
-    return time.time_ns()
+# def _now_ns() -> int:
+#     return time.time_ns()
+def _now_ns() -> datetime:
+    return datetime.now(tz=timezone.utc)
 
 
 class AerospikeSaver(BaseCheckpointSaver):
@@ -71,7 +74,7 @@ class AerospikeSaver(BaseCheckpointSaver):
         set_cp: str = "lg_cp",
         set_writes: str = "lg_cp_w",
         set_meta: str = "lg_cp_meta",
-        ttl: Optional[int] = None,
+        ttl: Optional[Dict[str, Any]] = None,
         timeline_max: int = 500,
     ) -> None:
         self.client = client
@@ -81,6 +84,13 @@ class AerospikeSaver(BaseCheckpointSaver):
         self.set_meta = set_meta
         self.ttl = ttl
         self.timeline_max = max(1, int(timeline_max))
+
+        ttl = ttl or {}
+        # Redis semantics:
+        #   default_ttl in MINUTES
+        #   refresh_on_read: sliding TTL
+        self._ttl_minutes: Optional[int] = ttl.get("default_ttl")
+        self._refresh_on_read: bool = bool(ttl.get("refresh_on_read", False))
 
     # ---------- config parsing ----------
     @staticmethod
@@ -118,10 +128,36 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def _key_timeline(self, thread_id: str, checkpoint_ns: str):
         return (self.ns, self.set_meta, f"{thread_id}{SEP}{checkpoint_ns}{SEP}__timeline__")
+    
+    def _ttl_meta(self, override_minutes: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        Convert our Redis-style TTL config into Aerospike meta.
+
+        Minutes:
+          None  -> no explicit TTL (use namespace default)
+          > 0   -> expire after N minutes
+          < 0   -> never expire (pin / TTL_NEVER_EXPIRE)
+        """
+        minutes = self._ttl_minutes if override_minutes is None else override_minutes
+
+        if minutes is None:
+            # no TTL configured: let Aerospike use the namespace default
+            return None
+
+        if minutes < 0:
+            # pinned / never expire
+            return {"ttl": aerospike.TTL_NEVER_EXPIRE}
+
+        if minutes == 0:
+            # explicit "use namespace default"
+            return {"ttl": 0}
+
+        return {"ttl": int(minutes) * 60}
+
 
     # ---------- aerospike io ----------
     def _put(self, key, bins: Dict[str, Any]) -> None:
-        meta = {"ttl": self.ttl} if self.ttl is not None else None
+        meta = self._ttl_meta()  #uses default_ttl from config, if any
         try:
             self.client.put(key, bins, meta)
         except aerospike.exception.AerospikeError as e:
@@ -129,11 +165,19 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def _get(self, key) -> Optional[Tuple]:
         try:
-            return self.client.get(key)
+            rec = self.client.get(key)
         except aerospike.exception.RecordNotFound:
             return None
         except aerospike.exception.AerospikeError as e:
             raise RuntimeError(f"Aerospike get failed for {key}: {e}") from e
+        
+        if self._refresh_on_read and self._ttl_minutes is not None and self._ttl_minutes > 0:
+            try:
+                self.client.touch(key, int(self._ttl_minutes) * 60)
+            except aerospike.exception.AerospikeError:
+                pass
+
+        return rec
 
     def _read_timeline_items(self, timeline_key) -> List[Tuple[int, str]]:
         rec = self._get(timeline_key)
@@ -149,6 +193,30 @@ class AerospikeSaver(BaseCheckpointSaver):
             return cleaned
         except Exception:
             return []
+        
+    def _apply_ttl_to_keys(self, keys, ttl_minutes: int) -> None:
+        """
+        Apply a new TTL policy to one or more keys.
+
+        ttl_minutes:
+          > 0  => expire after ttl_minutes
+          < 0  => never expire (pin)
+           0  => use namespace default
+        """
+        meta = self._ttl_meta(override_minutes=ttl_minutes)
+        if meta is None:
+            meta = {}
+
+        if isinstance(keys, tuple):
+            keys = [keys]
+
+        for key in keys:
+            try:
+                self.client.touch(key, meta)
+            except aerospike.exception.AerospikeError:
+                # ignore failures for individual keys
+                pass
+
 
     # ---------- public API (RunnableConfig-based) ----------
     def put(
@@ -175,8 +243,10 @@ class AerospikeSaver(BaseCheckpointSaver):
 
         ts = checkpoint.get("ts")
         if ts is None:
-            ts = _now_ns()
-            checkpoint["ts"] = ts
+            ts_dt = _now_ns()
+            ts_str = ts_dt.isoformat()
+            checkpoint["ts"] = ts_str
+            ts = ts_str
 
         cp_type, cp_bytes = self.serde.dumps_typed(checkpoint)
         metadata = metadata.copy()
@@ -253,7 +323,7 @@ class AerospikeSaver(BaseCheckpointSaver):
             _, _, bins = existing_rec
             existing_items = bins.get("writes")
         
-        now_ts = _now_ns()
+        now_ts = _now_ns().isoformat()
 
         for idx, (channel, value) in enumerate(writes):
             idx_val = WRITES_IDX_MAP.get(channel, idx)
