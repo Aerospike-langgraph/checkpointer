@@ -82,16 +82,19 @@ class AerospikeSaver(BaseCheckpointSaver):
         self.set_cp = set_cp
         self.set_writes = set_writes
         self.set_meta = set_meta
-        self.ttl = ttl
+        self.ttl = ttl or {}
         self.timeline_max = max(1, int(timeline_max))
-
-        ttl = ttl or {}
         # Redis semantics:
         #   default_ttl in MINUTES
         #   refresh_on_read: sliding TTL
-        self._ttl_minutes: Optional[int] = ttl.get("default_ttl")
-        self._refresh_on_read: bool = bool(ttl.get("refresh_on_read", False))
-
+        # if self.ttl and self.ttl.get("default_ttl") is not None:
+        #     self._ttl_minutes: Optional[int] = ttl.get("default_ttl")
+        #     self._refresh_on_read: bool = bool(ttl.get("refresh_on_read", False))
+        # else:
+        #     self._ttl_minutes: Optional[int] = 0  # no TTL by default
+        #     self._refresh_on_read: bool = False
+        self._ttl_minutes: Optional[int] = self.ttl.get("default_ttl")
+        self._refresh_on_read: bool = bool(self.ttl.get("refresh_on_read", False))
     # ---------- config parsing ----------
     @staticmethod
     def _ids_from_config(config: Optional[Dict[str, Any]]) -> Tuple[str, str, Optional[str], Optional[str]]:
@@ -158,8 +161,15 @@ class AerospikeSaver(BaseCheckpointSaver):
     # ---------- aerospike io ----------
     def _put(self, key, bins: Dict[str, Any]) -> None:
         #meta = self._ttl_meta() 
-        min = self._ttl_minutes 
-        meta = {"ttl": int(min)*60}#uses default_ttl from config, if any
+        minutes = self._ttl_minutes
+        meta = None
+        if minutes is not None:
+            minutes = int(minutes)
+            if minutes > 0:
+                meta = {"ttl": minutes * 60}
+            else:
+                # minutes == 0 means "use namespace default" (which for you is default-ttl 0 => never expire)
+                meta = None
         try:
             self.client.put(key, bins, meta)
         except aerospike.exception.AerospikeError as e:

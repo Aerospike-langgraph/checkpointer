@@ -41,7 +41,7 @@ def _test_ttl_config() -> dict:
     These environment variables allow you to easily tweak TTL 
     while testing without touching code.
     """
-    default_ttl = int(os.getenv("TEST_DEFAULT_TTL_MINUTES", "5"))
+    default_ttl = int(os.getenv("TEST_DEFAULT_TTL_MINUTES", "60"))
     refresh = os.getenv("TEST_REFRESH_ON_READ", "true").lower() == "true"
 
     return {
@@ -51,9 +51,21 @@ def _test_ttl_config() -> dict:
 # ---------------------------------------------------------
 
 @pytest.fixture()
-def saver(AerospikeSaver, client, aerospike_namespace):
+def saver(AerospikeSaver, client, aerospike_namespace,):
     ttl_cfg = _test_ttl_config()
-    return AerospikeSaver(client=client, namespace=aerospike_namespace, ttl=ttl_cfg)
+    if ttl_cfg is not None:
+        # TTL explicitly configured for tests
+        return AerospikeSaver(
+            client=client,
+            namespace=aerospike_namespace,
+            ttl=ttl_cfg,
+        )
+    # No TTL configured: checkpoints never expire
+    return AerospikeSaver(
+        client=client,
+        namespace=aerospike_namespace,
+    )
+
 
 @pytest.fixture()
 def cfg_base():
