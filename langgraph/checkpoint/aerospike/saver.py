@@ -18,9 +18,6 @@ from langgraph.checkpoint.base import (
 
 SEP = "|"
 
-
-# def _now_ns() -> int:
-#     return time.time_ns()
 def _now_ns() -> datetime:
     return datetime.now(tz=timezone.utc)
 
@@ -132,32 +129,6 @@ class AerospikeSaver(BaseCheckpointSaver):
     def _key_timeline(self, thread_id: str, checkpoint_ns: str):
         return (self.ns, self.set_meta, f"{thread_id}{SEP}{checkpoint_ns}{SEP}__timeline__")
     
-    # def _ttl_meta(self, override_minutes: Optional[int] = None) -> Optional[Dict[str, Any]]:
-    #     """
-    #     Convert our Redis-style TTL config into Aerospike meta.
-
-    #     Minutes:
-    #       None  -> no explicit TTL (use namespace default)
-    #       > 0   -> expire after N minutes
-    #       < 0   -> never expire (pin / TTL_NEVER_EXPIRE)
-    #     """
-    #     minutes = self._ttl_minutes if override_minutes is None else override_minutes
-
-    #     if minutes is None:
-    #         # no TTL configured: let Aerospike use the namespace default
-    #         return None
-
-    #     if minutes < 0:
-    #         # pinned / never expire
-    #         return {"ttl": aerospike.TTL_NEVER_EXPIRE}
-
-    #     if minutes == 0:
-    #         # explicit "use namespace default"
-    #         return {"ttl": 0}
-
-    #     return {"ttl": int(minutes) * 60}
-
-
     # ---------- aerospike io ----------
     def _put(self, key, bins: Dict[str, Any]) -> None:
         #meta = self._ttl_meta() 
@@ -206,29 +177,6 @@ class AerospikeSaver(BaseCheckpointSaver):
         except Exception:
             return []
         
-    # def _apply_ttl_to_keys(self, keys, ttl_minutes: int) -> None:
-    #     """
-    #     Apply a new TTL policy to one or more keys.
-
-    #     ttl_minutes:
-    #       > 0  => expire after ttl_minutes
-    #       < 0  => never expire (pin)
-    #        0  => use namespace default
-    #     """
-    #     meta = self._ttl_meta(override_minutes=ttl_minutes)
-    #     if meta is None:
-    #         meta = {}
-
-    #     if isinstance(keys, tuple):
-    #         keys = [keys]
-
-    #     for key in keys:
-    #         try:
-    #             self.client.touch(key, meta)
-    #         except aerospike.exception.AerospikeError:
-    #             # ignore failures for individual keys
-    #             pass
-
 
     # ---------- public API (RunnableConfig-based) ----------
     def put(
