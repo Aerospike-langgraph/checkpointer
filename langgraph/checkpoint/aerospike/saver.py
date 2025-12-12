@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 import json
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence, AsyncIterator
+import asyncio
 
 from langchain_core.runnables import RunnableConfig
 
@@ -13,7 +14,9 @@ from langgraph.checkpoint.base import (
     BaseCheckpointSaver,
     CheckpointTuple,
     ChannelVersions,
-    WRITES_IDX_MAP
+    WRITES_IDX_MAP,
+    Checkpoint,
+    CheckpointMetadata
 )
 
 SEP = "|"
@@ -23,47 +26,6 @@ def _now_ns() -> datetime:
 
 
 class AerospikeSaver(BaseCheckpointSaver):
-    """
-    Minimal checkpointer with zero server-side querying requirements.
-
-    Public API expects a RunnableConfig-like dict:
-
-        config = {
-            "configurable": {
-                "thread_id": "<required>",
-                "checkpoint_ns": "<required>",
-                # optional:
-                "checkpoint_id": "<for put/get or explicit resume>",
-                "before": "<for list()>",
-            },
-            # you can also pass tags/metadata/etc. but they're ignored here
-        }
-
-    Storage layout (all in a single namespace):
-      - main records (set=self.set_cp):
-            key:  "{thread_id}|{checkpoint_ns}|{checkpoint_id}"
-            bins: {
-                "thread_id": str,
-                "checkpoint_ns": str,
-                "checkpoint_id": str,
-                "checkpoint": str (JSON),
-                "metadata":   str (JSON),
-                "ts":         int (ns since epoch),
-            }
-
-      - latest pointer record (set=self.set_meta):
-            key:  "{thread_id}|{checkpoint_ns}|__latest__"
-            bins: { "checkpoint_id": str, "ts": int }
-
-      - timeline record (set=self.set_meta):
-            key:  "{thread_id}|{checkpoint_ns}|__timeline__"
-            bins: { "items": str(JSON list[[ts:int, checkpoint_id:str], ...]) }
-
-      - writes (optional, set=self.set_writes):
-            key:  "{thread_id}|{checkpoint_ns}|{checkpoint_id}"
-            bins: { "writes": str(JSON) }
-    """
-
     def __init__(
         self,
         client: aerospike.Client,
@@ -81,17 +43,9 @@ class AerospikeSaver(BaseCheckpointSaver):
         self.set_meta = set_meta
         self.ttl = ttl or {}
         self.timeline_max = max(1, int(timeline_max))
-        # Redis semantics:
-        #   default_ttl in MINUTES
-        #   refresh_on_read: sliding TTL
-        # if self.ttl and self.ttl.get("default_ttl") is not None:
-        #     self._ttl_minutes: Optional[int] = ttl.get("default_ttl")
-        #     self._refresh_on_read: bool = bool(ttl.get("refresh_on_read", False))
-        # else:
-        #     self._ttl_minutes: Optional[int] = 0  # no TTL by default
-        #     self._refresh_on_read: bool = False
         self._ttl_minutes: Optional[int] = self.ttl.get("default_ttl")
         self._refresh_on_read: bool = bool(self.ttl.get("refresh_on_read", False))
+
     # ---------- config parsing ----------
     @staticmethod
     def _ids_from_config(config: Optional[Dict[str, Any]]) -> Tuple[str, str, Optional[str], Optional[str]]:
@@ -131,7 +85,6 @@ class AerospikeSaver(BaseCheckpointSaver):
     
     # ---------- aerospike io ----------
     def _put(self, key, bins: Dict[str, Any]) -> None:
-        #meta = self._ttl_meta() 
         minutes = self._ttl_minutes
         meta = None
         if minutes is not None:
@@ -139,7 +92,6 @@ class AerospikeSaver(BaseCheckpointSaver):
             if minutes > 0:
                 meta = {"ttl": minutes * 60}
             else:
-                # minutes == 0 means "use namespace default" (which for you is default-ttl 0 => never expire)
                 meta = None
         try:
             self.client.put(key, bins, meta)
@@ -181,21 +133,12 @@ class AerospikeSaver(BaseCheckpointSaver):
     # ---------- public API (RunnableConfig-based) ----------
     def put(
         self,
-        config: Dict[str, Any],
-        checkpoint: Dict[str, Any],
-        metadata: Dict[str, Any],
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
         new_versions: ChannelVersions,
-    ) -> Dict[str, Any]:
-            
-        """
-        Save/overwrite a checkpoint and advance latest/timeline pointers.
-
-        LangGraph will pass in:
-          - config: current RunnableConfig (may or may not have checkpoint_id set)
-          - checkpoint: full checkpoint dict (includes 'id' and 'ts')
-          - metadata: CheckpointMetadata dict
-          - new_versions: channel versions updated in this step (we ignore for now)
-        """
+    ) -> RunnableConfig:
+        
         thread_id, checkpoint_ns, parent_checkpoint_id = self._ids_from_config(config)
         checkpoint_id = checkpoint.get("id")
         if not checkpoint_id:
@@ -256,18 +199,12 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def put_writes(
         self,
-        config: Dict[str, Any],
-        writes: Iterable[Dict[str, Any]],
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
         task_id: str,
         task_path: str = "",
     ) -> None:
-        """
-        Persist per-checkpoint write-set (optional).
-        LangGraph will call this with:
-          - config: RunnableConfig (with checkpoint_id)
-          - writes: iterable of write records
-          - task_id / task_path: identifiers for the task (we ignore them)
-        """
+        
         if not writes:
             return
 
@@ -314,11 +251,9 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def get_tuple(
         self,
-        config: Dict[str, Any],
+        config: RunnableConfig,
     ) -> Optional[CheckpointTuple]:
-        """
-        If configurable.checkpoint_id is omitted, returns the latest.
-        """
+        
         thread_id, checkpoint_ns, checkpoint_id = self._ids_from_config(config)
 
         if checkpoint_id is None:
@@ -402,20 +337,7 @@ class AerospikeSaver(BaseCheckpointSaver):
         before: Optional[RunnableConfig] = None,
         limit: int | None = None,
     ) -> Iterator[CheckpointTuple]:
-        """List checkpoints that match the given criteria.
-
-        Args:
-            config: Base configuration for filtering checkpoints.
-            filter: Additional filtering criteria.
-            before: List checkpoints created before this configuration.
-            limit: Maximum number of checkpoints to return.
-
-        Returns:
-            Iterator of matching checkpoint tuples.
-
-        Raises:
-            NotImplementedError: Implement this method in your custom checkpoint saver.
-        """
+        
         thread_id, checkpoint_ns, _ = self._ids_from_config(config or {})
 
         timeline_key = self._key_timeline(thread_id, checkpoint_ns)
@@ -464,3 +386,61 @@ class AerospikeSaver(BaseCheckpointSaver):
 
             yielded += 1
             yield tpl
+
+    async def aget(self, config: RunnableConfig) -> Checkpoint | None:
+        
+        if value := await self.aget_tuple(config):
+            return value.checkpoint
+
+    async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
+        
+        return await asyncio.to_thread(self.get_tuple, config)
+
+    async def alist(
+        self,
+        config: RunnableConfig | None,
+        *,
+        filter: dict[str, Any] | None = None,
+        before: RunnableConfig | None = None,
+        limit: int | None = None,
+    ) -> AsyncIterator[CheckpointTuple]:
+        
+        def _collect() -> list[CheckpointTuple]:
+            return list(self.list(config, filter=filter, before=before, limit=limit))
+
+        items = await asyncio.to_thread(_collect)
+        for tpl in items:
+            yield tpl
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        
+        return await asyncio.to_thread(
+            self.put,
+            config,
+            checkpoint,
+            metadata,
+            new_versions,
+        )
+
+    async def aput_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        
+        await asyncio.to_thread(
+            self.put_writes,
+            config,
+            writes,
+            task_id,
+            task_path,
+        )
+
