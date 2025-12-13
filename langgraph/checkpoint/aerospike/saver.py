@@ -177,7 +177,15 @@ class AerospikeSaver(BaseCheckpointSaver):
         except Exception:
             return []
         
-
+    def _remove(self, key) -> None:
+        """Remove a record; ignore if it doesn't exist."""
+        try:
+            self.client.remove(key)
+        except aerospike.exception.RecordNotFound:
+            return
+        except aerospike.exception.AerospikeError as e:
+            raise RuntimeError(f"Aerospike remove failed for {key}: {e}") from e
+        
     # ---------- public API (RunnableConfig-based) ----------
     def put(
         self,
@@ -311,6 +319,39 @@ class AerospikeSaver(BaseCheckpointSaver):
 
         
         self._put(key, {"writes": existing_items})
+        
+    def delete_thread(self, config: Dict[str, Any]) -> None:
+        """
+        Delete all checkpoints + writes for (thread_id, checkpoint_ns),
+        and remove latest/timeline meta records.
+
+        NOTE: With your current layout, this deletes for ONE checkpoint_ns.
+        """
+        thread_id, checkpoint_ns, _checkpoint_id = self._ids_from_config(config)
+
+        # 1) Read timeline -> checkpoint_ids
+        timeline_key = self._key_timeline(thread_id, checkpoint_ns)
+        items = self._read_timeline_items(timeline_key)
+
+        checkpoint_ids = [cid for _ts, cid in items if cid]
+
+        # 2) Also include latest pointer checkpoint_id (in case timeline is missing/stale)
+        latest_key = self._key_latest(thread_id, checkpoint_ns)
+        latest_rec = self._get(latest_key)
+        if latest_rec is not None:
+            latest_bins = latest_rec[2]
+            latest_cid = latest_bins.get("checkpoint_id")
+            if isinstance(latest_cid, str) and latest_cid and latest_cid not in checkpoint_ids:
+                checkpoint_ids.append(latest_cid)
+
+        # 3) Delete checkpoint + writes records
+        for cid in checkpoint_ids:
+            self._remove(self._key_cp(thread_id, checkpoint_ns, cid))
+            self._remove(self._key_writes(thread_id, checkpoint_ns, cid))
+
+        # 4) Delete meta records (latest + timeline)
+        self._remove(latest_key)
+        self._remove(timeline_key)
 
     def get_tuple(
         self,
