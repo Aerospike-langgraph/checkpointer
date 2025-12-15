@@ -57,4 +57,8 @@ Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`. Th
    ```bash
    pip install git+https://github.com/Aerospike-langgraph/checkpointer.git
    ```
+## Langgraph Aerospike Simple Flow:
+- Below is a simple flow of internal functions called by langgraph during checkpointing.
+![LangGraph Aerospike Checkpointer Flow](./assets/Langgraph-Aerospike-Flow.png)
+
 ## Summary
