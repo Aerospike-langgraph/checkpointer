@@ -59,6 +59,6 @@ Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`. Th
    ```
 ## Langgraph Aerospike Simple Flow:
 - Below is a simple flow of internal functions called by langgraph during checkpointing.
-![LangGraph Aerospike Checkpointer Flow](./assets/Langgraph-Aerospike-Flow.png)
+![LangGraph Aerospike Checkpointer Flow](./assets/Langgraph-Aeropsike-Flow.png)
 
 ## Summary
